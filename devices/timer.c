@@ -30,6 +30,20 @@ static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
 
+static void wake_sleeping_threads (void);
+static bool wakes_before (const struct list_elem *a,
+                          const struct list_elem *b, void *aux);
+
+/* List of threads that are currently sleeping */
+static struct list sleep_list;
+
+struct sleeping_thread
+  {
+    int64_t ticks;              /* Number of ticks to sleep until. */
+    struct semaphore sema;      /* Semaphore used to block and unblock the sleeping thread. */
+    struct list_elem elem;      /* List element for sleep_list. */
+  };
+
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
 void
@@ -37,6 +51,8 @@ timer_init (void)
 {
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+
+  list_init (&sleep_list);
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -90,10 +106,23 @@ void
 timer_sleep (int64_t ticks) 
 {
   int64_t start = timer_ticks ();
+  struct sleeping_thread st;
+  enum intr_level old_level;
 
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+
+  st.ticks = start + ticks;
+  sema_init (&st.sema, 0);
+
+  /* We must disable interrupts while accessing sleep_list to
+     avoid being pre-empted by the timer interrupt, which will
+     also attempt to access the same list. */
+  old_level = intr_disable ();
+  list_insert_ordered (&sleep_list, &st.elem, wakes_before, NULL);
+  intr_set_level (old_level);
+
+  /* Put the current thread to sleep by downing a 0 semaphore. */
+  sema_down(&st.sema);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -172,6 +201,7 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
   thread_tick ();
+  wake_sleeping_threads ();
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
@@ -242,5 +272,38 @@ real_time_delay (int64_t num, int32_t denom)
   /* Scale the numerator and denominator down by 1000 to avoid
      the possibility of overflow. */
   ASSERT (denom % 1000 == 0);
-  busy_wait (loops_per_tick * num / 1000 * TIMER_FREQ / (denom / 1000)); 
+  busy_wait (loops_per_tick * num / 1000 * TIMER_FREQ / (denom / 1000));
+}
+
+void
+wake_sleeping_threads (void)
+{
+  int64_t ticks = timer_ticks ();
+  struct list_elem *e;
+
+  for (e = list_begin(&sleep_list); e != list_end (&sleep_list);
+       e = list_next (e))
+    {
+      struct sleeping_thread *st = list_entry (e, struct sleeping_thread, elem);
+
+      /* The list is ordered, so as soon as we find a thread that doesn't
+         yet need waking up, we can stop iterating through the list. */
+      if (ticks < st->ticks)
+        break;
+
+      /* Wake up the thread and remove it from the sleep list. */
+      list_remove(e);
+      sema_up(&st->sema);
+    }
+}
+
+/* Returns true if the thread associated with a needs to wake up
+ * before the thread associated with b, false otherwise. */
+bool
+wakes_before (const struct list_elem *a,
+              const struct list_elem *b, void *aux UNUSED)
+{
+  struct sleeping_thread *st_a = list_entry (a, struct sleeping_thread, elem);
+  struct sleeping_thread *st_b = list_entry (b, struct sleeping_thread, elem);
+  return st_a->ticks < st_b->ticks;
 }

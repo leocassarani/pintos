@@ -282,7 +282,7 @@ wake_sleeping_threads (void)
   struct list_elem *e;
 
   for (e = list_begin(&sleep_list); e != list_end (&sleep_list);
-       e = list_next (e))
+       e = list_remove (e))
     {
       struct sleeping_thread *st = list_entry (e, struct sleeping_thread, elem);
 
@@ -291,8 +291,7 @@ wake_sleeping_threads (void)
       if (ticks < st->ticks)
         break;
 
-      /* Wake up the thread and remove it from the sleep list. */
-      list_remove(e);
+      /* Wake up the thread. */
       sema_up(&st->sema);
     }
 }

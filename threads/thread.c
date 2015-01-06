@@ -204,6 +204,10 @@ thread_create (const char *name, int priority,
   /* Add to run queue. */
   thread_unblock (t);
 
+  /* Yield to the new thread if it has higher priority. */
+  if (t->priority > thread_get_priority ())
+    thread_yield ();
+
   return tid;
 }
 
@@ -338,7 +342,33 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
+  int old_priority = thread_get_priority ();
+  enum intr_level old_level;
+  struct thread *next;
+
   thread_current ()->priority = new_priority;
+
+  /* Small optimization: if the current thread's priority has
+     increased or remained the same, we already know that we're
+     still the highest priority thread. */
+  if (new_priority >= old_priority)
+    return;
+
+  old_level = intr_disable ();
+
+  /* Peek at the first (highest priority) element of ready_list.
+     Can't use next_thread_to_run because it would modify the list. */
+  if (list_empty (&ready_list))
+    next = idle_thread;
+  else
+    next = list_entry (list_front (&ready_list), struct thread, elem);
+
+  intr_set_level (old_level);
+
+  /* If the highest priority thread on ready_list has higher
+     priority than the current thread's, yield to it. */
+  if (next->priority > new_priority)
+    thread_yield ();
 }
 
 /* Returns the current thread's priority. */

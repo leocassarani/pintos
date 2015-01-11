@@ -32,6 +32,9 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+static void donate_priority (struct lock *);
+static void revoke_donations (struct lock *);
+
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -68,7 +71,8 @@ sema_down (struct semaphore *sema)
   old_level = intr_disable ();
   while (sema->value == 0) 
     {
-      list_push_back (&sema->waiters, &thread_current ()->elem);
+      list_insert_ordered (&sema->waiters, &thread_current ()->elem,
+                           thread_higher_priority, NULL);
       thread_block ();
     }
   sema->value--;
@@ -108,15 +112,29 @@ sema_try_down (struct semaphore *sema)
 void
 sema_up (struct semaphore *sema) 
 {
+  struct thread *t;
+  int priority = PRI_MIN;
   enum intr_level old_level;
 
   ASSERT (sema != NULL);
 
   old_level = intr_disable ();
+
   if (!list_empty (&sema->waiters)) 
-    thread_unblock (list_entry (list_pop_front (&sema->waiters),
-                                struct thread, elem));
+    {
+      t = list_entry (list_pop_front (&sema->waiters), struct thread, elem);
+      priority = t->priority;
+      thread_unblock (t);
+    }
+
   sema->value++;
+
+  /* Unless we're running inside an interrupt handler, let's
+     check if we've just unblocked a thread with higher priority
+     than us - in which case, we yield the processor to it. */
+  if (!intr_context () && priority > thread_get_priority ())
+    thread_yield ();
+
   intr_set_level (old_level);
 }
 
@@ -192,12 +210,22 @@ lock_init (struct lock *lock)
 void
 lock_acquire (struct lock *lock)
 {
+  struct thread *cur = thread_current ();
+  enum intr_level old_level;
+
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
+  old_level = intr_disable ();
+  if (lock->holder)
+    donate_priority (lock);
+  intr_set_level (old_level);
+
+  cur->waiting_for = lock;
   sema_down (&lock->semaphore);
-  lock->holder = thread_current ();
+  lock->holder = cur;
+  cur->waiting_for = NULL;
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -226,11 +254,12 @@ lock_try_acquire (struct lock *lock)
    make sense to try to release a lock within an interrupt
    handler. */
 void
-lock_release (struct lock *lock) 
+lock_release (struct lock *lock)
 {
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
+  revoke_donations (lock);
   lock->holder = NULL;
   sema_up (&lock->semaphore);
 }
@@ -244,6 +273,58 @@ lock_held_by_current_thread (const struct lock *lock)
   ASSERT (lock != NULL);
 
   return lock->holder == thread_current ();
+}
+
+/* Performs nested priority donation in order to boost the
+   priority of the thread currently holding the given lock. */
+static void
+donate_priority (struct lock *lock)
+{
+  int depth = 0;
+  struct thread *from = thread_current ();
+  struct thread *to;
+
+  while (lock && depth < 8)
+    {
+      to = lock->holder;
+      if (!to)
+        break;
+
+      list_push_back (&to->donations, &from->donate_elem);
+      thread_refresh_priority (to);
+
+      lock = to->waiting_for;
+      from = to;
+      depth++;
+    }
+}
+
+/* Revokes priority donations from threads who were waiting
+   on the given lock. Used when the holder is about to release
+   the lock and is no longer entitled to a priority boost. */
+static void
+revoke_donations (struct lock *lock)
+{
+  struct thread *t = lock->holder;
+  struct thread *donor;
+  struct list_elem *e;
+
+  if (list_empty (&t->donations))
+    return;
+
+  e = list_begin (&t->donations);
+  while (e != list_end (&t->donations))
+    {
+      donor = list_entry (e, struct thread, donate_elem);
+      /* Only remove the donation from the list if it pertains
+         to the lock that's about to be released. */
+      if (donor->waiting_for == lock)
+        e = list_remove (e);
+      else
+        e = list_next (e);
+    }
+
+  thread_refresh_priority (t);
 }
 
 /* One semaphore in a list. */

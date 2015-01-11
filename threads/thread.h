@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "threads/synch.h"
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -88,10 +89,15 @@ struct thread
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
+    int base_priority;                  /* Base priority. */
     struct list_elem allelem;           /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
+
+    struct lock *waiting_for;           /* Lock that the thread is blocked waiting to acquire. */
+    struct list donations;              /* List of priority donations received. */
+    struct list_elem donate_elem;       /* List element for the donations list. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -132,6 +138,10 @@ void thread_foreach (thread_action_func *, void *);
 
 int thread_get_priority (void);
 void thread_set_priority (int);
+void thread_refresh_priority (struct thread *);
+bool thread_higher_priority (const struct list_elem *a,
+                             const struct list_elem *b,
+                             void *aux);
 
 int thread_get_nice (void);
 void thread_set_nice (int);

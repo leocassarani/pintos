@@ -32,9 +32,6 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
-static void donate_priority (struct lock *);
-static void revoke_donations (struct lock *);
-
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -217,12 +214,16 @@ lock_acquire (struct lock *lock)
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
 
+  cur->waiting_for = lock;
+
   old_level = intr_disable ();
   if (lock->holder)
-    donate_priority (lock);
+    {
+      list_push_back (&lock->holder->donations, &cur->donate_elem);
+      thread_donate_priority ();
+    }
   intr_set_level (old_level);
 
-  cur->waiting_for = lock;
   sema_down (&lock->semaphore);
   lock->holder = cur;
   cur->waiting_for = NULL;
@@ -259,7 +260,7 @@ lock_release (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (lock_held_by_current_thread (lock));
 
-  revoke_donations (lock);
+  thread_revoke_donations (lock);
   lock->holder = NULL;
   sema_up (&lock->semaphore);
 }
@@ -273,58 +274,6 @@ lock_held_by_current_thread (const struct lock *lock)
   ASSERT (lock != NULL);
 
   return lock->holder == thread_current ();
-}
-
-/* Performs nested priority donation in order to boost the
-   priority of the thread currently holding the given lock. */
-static void
-donate_priority (struct lock *lock)
-{
-  int depth = 0;
-  struct thread *from = thread_current ();
-  struct thread *to;
-
-  while (lock && depth < 8)
-    {
-      to = lock->holder;
-      if (!to)
-        break;
-
-      list_push_back (&to->donations, &from->donate_elem);
-      thread_refresh_priority (to);
-
-      lock = to->waiting_for;
-      from = to;
-      depth++;
-    }
-}
-
-/* Revokes priority donations from threads who were waiting
-   on the given lock. Used when the holder is about to release
-   the lock and is no longer entitled to a priority boost. */
-static void
-revoke_donations (struct lock *lock)
-{
-  struct thread *t = lock->holder;
-  struct thread *donor;
-  struct list_elem *e;
-
-  if (list_empty (&t->donations))
-    return;
-
-  e = list_begin (&t->donations);
-  while (e != list_end (&t->donations))
-    {
-      donor = list_entry (e, struct thread, donate_elem);
-      /* Only remove the donation from the list if it pertains
-         to the lock that's about to be released. */
-      if (donor->waiting_for == lock)
-        e = list_remove (e);
-      else
-        e = list_next (e);
-    }
-
-  thread_refresh_priority (t);
 }
 
 /* One semaphore in a list. */

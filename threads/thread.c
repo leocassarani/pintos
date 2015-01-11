@@ -20,6 +20,10 @@
    of thread.h for details. */
 #define THREAD_MAGIC 0xcd6abf4b
 
+/* The maximum amount of nesting allowed when performing priority
+   donation. Used to avoid looping infinitely. */
+#define MAX_DONATION_DEPTH 8
+
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
@@ -346,13 +350,77 @@ thread_set_priority (int new_priority)
 {
   int old_priority = thread_get_priority ();
 
+  /* Set the new base priority but let thread_refresh_priority
+     work out what the effective priority is, after incoming
+     donations have been taken into account. */
   thread_current ()->base_priority = new_priority;
   thread_refresh_priority (thread_current ());
+
+  /* Update the priority of threads we have donated ours to. */
+  thread_donate_priority ();
 
   /* Small optimisation: only check if we're still the highest
      priority thread if our priority has been decreased. */
   if (new_priority < old_priority)
     yield_to_higher_priority_thread ();
+}
+
+/* Performs nested priority donation in order to boost the
+   priority of the thread currently holding the lock that is
+   blocking the current thread. */
+void
+thread_donate_priority (void)
+{
+  int depth = 0;
+  struct thread *from = thread_current ();
+  struct thread *to;
+  struct lock *lock = from->waiting_for;
+
+  while (lock && depth < MAX_DONATION_DEPTH)
+    {
+      to = lock->holder;
+      if (!to)
+        break;
+
+      /* If the donating thread's priority is lower or the same
+         as the thread receiving the donation, exit early. */
+      if (to->priority >= from->priority)
+        break;
+
+      to->priority = from->priority;
+
+      lock = to->waiting_for;
+      from = to;
+      depth++;
+    }
+}
+
+/* Revokes priority donations from threads who were waiting
+   on the given lock. Used when the holder is about to release
+   the lock and is no longer entitled to a priority boost. */
+void
+thread_revoke_donations (struct lock *lock)
+{
+  struct thread *t = thread_current ();
+  struct thread *donor;
+  struct list_elem *e;
+
+  if (list_empty (&t->donations))
+    return;
+
+  e = list_begin (&t->donations);
+  while (e != list_end (&t->donations))
+    {
+      donor = list_entry (e, struct thread, donate_elem);
+      /* Only remove the donation from the list if it pertains
+         to the lock that's about to be released. */
+      if (donor->waiting_for == lock)
+        e = list_remove (e);
+      else
+        e = list_next (e);
+    }
+
+  thread_refresh_priority (t);
 }
 
 void
@@ -366,13 +434,12 @@ thread_refresh_priority (struct thread *t)
   else
     {
       max = list_entry (list_max (&t->donations, lower_priority_donation, NULL),
-                            struct thread, donate_elem);
+                        struct thread, donate_elem);
 
       if (max->priority > t->base_priority)
         t->priority = max->priority;
       else
         t->priority = t->base_priority;
-
     }
 
   intr_set_level (old_level);

@@ -32,6 +32,10 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+static bool higher_priority_waiter (const struct list_elem *a,
+                                    const struct list_elem *b,
+                                    void *aux UNUSED);
+
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -352,9 +356,12 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
   ASSERT (!intr_context ());
   ASSERT (lock_held_by_current_thread (lock));
 
-  if (!list_empty (&cond->waiters)) 
-    sema_up (&list_entry (list_pop_front (&cond->waiters),
-                          struct semaphore_elem, elem)->semaphore);
+  if (list_empty (&cond->waiters))
+    return;
+
+  list_sort (&cond->waiters, higher_priority_waiter, NULL);
+  sema_up (&list_entry (list_pop_front (&cond->waiters),
+                        struct semaphore_elem, elem)->semaphore);
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by
@@ -371,4 +378,34 @@ cond_broadcast (struct condition *cond, struct lock *lock)
 
   while (!list_empty (&cond->waiters))
     cond_signal (cond, lock);
+}
+
+/* Returns true if the highest-priority waiter on the semaphore
+   associated with a has higher priority than the highest-priority
+   waiter for the sempahore associated with b.
+
+   If either of the semaphores has no waiting threads, the other
+   semaphore is considered to have higher priority. */
+static bool
+higher_priority_waiter (const struct list_elem *a,
+                        const struct list_elem *b,
+                        void *aux UNUSED)
+{
+  struct semaphore *sema_a, *sema_b;
+  sema_a = &list_entry (a, struct semaphore_elem, elem)->semaphore;
+  sema_b = &list_entry (b, struct semaphore_elem, elem)->semaphore;
+
+  /* If there are no waiters for a, b takes precedence. */
+  if (list_empty (&sema_a->waiters))
+    return false;
+
+  /* If there are no waiters for b, a takes precedence. */
+  if (list_empty (&sema_b->waiters))
+    return true;
+
+  list_sort (&sema_a->waiters, thread_higher_priority, NULL);
+  list_sort (&sema_b->waiters, thread_higher_priority, NULL);
+
+  return thread_higher_priority (list_front (&sema_a->waiters),
+                                 list_front (&sema_b->waiters), NULL);
 }

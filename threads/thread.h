@@ -140,7 +140,6 @@ int thread_get_priority (void);
 void thread_set_priority (int);
 void thread_donate_priority (void);
 void thread_revoke_donations (struct lock *);
-void thread_refresh_priority (struct thread *);
 bool thread_higher_priority (const struct list_elem *a,
                              const struct list_elem *b,
                              void *aux);

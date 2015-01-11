@@ -75,6 +75,7 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+static void refresh_priority (void);
 static void yield_to_higher_priority_thread (void);
 static bool lower_priority_donation (const struct list_elem *a,
                                      const struct list_elem *b,
@@ -350,11 +351,11 @@ thread_set_priority (int new_priority)
 {
   int old_priority = thread_get_priority ();
 
-  /* Set the new base priority but let thread_refresh_priority
-     work out what the effective priority is, after incoming
+  /* Set the new base priority but let refresh_priority work
+     out what the effective priority is, after incoming
      donations have been taken into account. */
   thread_current ()->base_priority = new_priority;
-  thread_refresh_priority (thread_current ());
+  refresh_priority ();
 
   /* Update the priority of threads we have donated ours to. */
   thread_donate_priority ();
@@ -420,29 +421,7 @@ thread_revoke_donations (struct lock *lock)
         e = list_next (e);
     }
 
-  thread_refresh_priority (t);
-}
-
-void
-thread_refresh_priority (struct thread *t)
-{
-  struct thread *max;
-  enum intr_level old_level = intr_disable ();
-
-  if (list_empty (&t->donations))
-    t->priority = t->base_priority;
-  else
-    {
-      max = list_entry (list_max (&t->donations, lower_priority_donation, NULL),
-                        struct thread, donate_elem);
-
-      if (max->priority > t->base_priority)
-        t->priority = max->priority;
-      else
-        t->priority = t->base_priority;
-    }
-
-  intr_set_level (old_level);
+  refresh_priority ();
 }
 
 /* Returns the current thread's priority. */
@@ -699,6 +678,33 @@ allocate_tid (void)
   lock_release (&tid_lock);
 
   return tid;
+}
+
+/* Recalculates the priority of the current thread, based on
+ * its base priority and the priority donations received. */
+static void
+refresh_priority (void)
+{
+  struct thread *t = thread_current ();
+  struct thread *max;
+  enum intr_level old_level;
+
+  old_level = intr_disable ();
+
+  if (list_empty (&t->donations))
+    t->priority = t->base_priority;
+  else
+    {
+      max = list_entry (list_max (&t->donations, lower_priority_donation, NULL),
+                        struct thread, donate_elem);
+
+      if (max->priority > t->base_priority)
+        t->priority = max->priority;
+      else
+        t->priority = t->base_priority;
+    }
+
+  intr_set_level (old_level);
 }
 
 /* Yields the CPU to a higher priority thread, if there is one on

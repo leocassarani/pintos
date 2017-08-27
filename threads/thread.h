@@ -25,6 +25,10 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /* Default priority. */
 #define PRI_MAX 63                      /* Highest priority. */
 
+/* Thread niceness. */
+#define NICE_MIN -20                    /* Lowest nice value. */
+#define NICE_MAX 20                     /* Highest nice value. */
+
 /* A kernel thread or user process.
 
    Each thread structure is stored in its own 4 kB page.  The
@@ -90,11 +94,14 @@ struct thread
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
     int base_priority;                  /* Base priority. */
+    int nice;                           /* Nice value, used by the MLFQS. */
+    int recent_cpu;                     /* Amount of CPU time the thread has received recently (MLFQS). */
     struct list_elem allelem;           /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
+    /* Shared between thread.c and synch.c. */
     struct lock *waiting_for;           /* Lock that the thread is blocked waiting to acquire. */
     struct list donations;              /* List of priority donations received. */
     struct list_elem donate_elem;       /* List element for the donations list. */

@@ -21,6 +21,8 @@
 static thread_func start_process NO_RETURN;
 static bool load (char *argv[], void (**eip) (void), void **esp);
 
+struct semaphore loaded;
+
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -32,6 +34,8 @@ process_execute (const char *file_name)
   char **argv;
   int argc = 0;
   tid_t tid;
+
+  sema_init (&loaded, 0);
 
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
@@ -63,6 +67,8 @@ process_execute (const char *file_name)
       palloc_free_page (argv);
     }
 
+  sema_down (&loaded);
+
   return tid;
 }
 
@@ -81,6 +87,8 @@ start_process (void *argv_)
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (argv, &if_.eip, &if_.esp);
+
+  sema_up (&loaded);
 
   /* If load failed, quit. */
   palloc_free_page (argv);

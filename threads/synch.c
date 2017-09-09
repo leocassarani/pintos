@@ -135,14 +135,13 @@ sema_up (struct semaphore *sema)
     }
 
   sema->value++;
+  intr_set_level (old_level);
 
   /* Unless we're running inside an interrupt handler, let's
      check if we've just unblocked a thread with higher priority
      than us - in which case, we yield the processor to it. */
   if (!intr_context () && priority > thread_get_priority ())
     thread_yield ();
-
-  intr_set_level (old_level);
 }
 
 static void sema_test_helper (void *sema_);
